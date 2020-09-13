@@ -1,0 +1,1 @@
+# R - Theoretical statistical project under the supervision of Mr. Stéphane Boucheron (LPSM - Probability, Statistics and Modeling Laboratory). Lee Carter Model (mortality forecasting and life expectancy forecasting).
