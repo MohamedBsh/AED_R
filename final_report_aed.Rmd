@@ -1,0 +1,350 @@
+---
+title: "Analyse exploratoire des données - Devoir III"
+author: "Duc Duong Nguyen & Mohamed-Amine Bousahih"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+  html_notebook:
+    code_folding: none
+    number_sections: yes
+    toc: yes
+  html_document:
+    fig_caption: yes
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+subtitle: Quotients de mortalité,Tables de mortalité,ACP,ACC,SVD,Modèle de Lee-Carter.
+params:
+  country: France
+  country_code: fr_t
+  dirpath: ../LIFE_TABLES/lt_
+  timecourse: 1945:2015
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+
+# Introduction 
+
+L'étude de la structure et de l'évolution d'une population dans une région est appelée démographie. La démographie est l'étude du nombre, de la répartition, du territoire et de la structure de la population et de ses changements, dans laquelle les changements se produisent en raison de la naissance (fertilité), du décès (mortalité) et de la migration. 
+
+L'objet principal ce travail de recherche sont les quotients de mortalité, un quotient de mortalité, d'après une définition de l'INED, est une "probabilité, pour les personnes survivantes à un âge, de décéder avant l'âge suivant".
+
+Le fil conducteur de ce travail de recherche sera une comparaison reposant sur ces quotients de mortalités entre les Etats-Unis et l'Espagne.
+
+Nous visualiserons et analyserons ces quotients de mortalités à travers le temps, en fonction du sexe et pour des groupes d'âges précis.
+
+Comme tout bon statisticien, nous utiliserons une ACP (Analyse en composante principale) et une ACC (Analyse canonique des corrélations) pour explorer des relations pouvant exister entre des groupes de variables que nous essayerons d'identifier au sein de ces données. 
+
+A l'issue de cette phase d'exploration, nous chercherons à effectuer des prédictions de ces quotients de mortalités.
+Pour effectuer ces prédictions, de nombreuses méthodes ont été proposées pour décrire le comportement des quotients de mortalité en fonction de l'âge, du temps pour une région donnée. En particulier, nous présenterons un modèle mathématique étant largement reconnu et utilisé proposé par Lee et Carter deux américains, qui en 1992, ont mis en place une méthode afin d'ajuster et de prévoir les taux de mortalité humaine.  
+
+
+# Les données
+
+L'ensemble de données qui sera utilisé est la base de données sur la mortalité humaine (HMD, Human Mortality Database organization), qui fournit un accès gratuit aux données historiques de mortalité pour des pays européens : France, Grande-Bretagne -- enfaite l'Angleterre et le Pays de Galles -- , Italie, Pays-Bas, Espagne, Suède. Couvrant également les Etats-Unis. Le HMD est une importante collection de données détaillées, cohérentes et de haute qualité sur la mortalité humaine.
+
+Les tables de données sont téléchargés à partir de [https://www.mortality.org] (https://www.mortality.org).
+
+```{r, echo=FALSE,eval=FALSE}
+# for debugging
+# params should be initialized from YAML header
+params<- list(
+    timecourse= 1945:2015,
+    dirpath= '../LIFE_TABLES/lt_',
+    country_code= 'fr_t',
+    country= 'France')
+```
+
+```{r, echo=FALSE}
+timecourse <- eval(rlang::parse_expr(params$timecourse))
+```
+
+```{r tidyverse, message=FALSE, warning=FALSE, echo=FALSE}
+pacman::p_load(tidyverse)
+pacman::p_load(plotly)
+pacman::p_load(foreach)
+pacman::p_load(iterators)
+pacman::p_load(DT)
+pacman::p_load(ade4)
+pacman::p_load(FactoMineR)
+pacman::p_load(factoextra)
+pacman::p_load(FactoInvestigate)
+pacman::p_load(ggfortify)
+old_theme <-theme_set(theme_dark(base_size=9,
+                                 base_family = "Helvetica"))
+knitr::opts_chunk$set(eval=TRUE,
+  echo=TRUE,
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE,
+  autodep = TRUE,
+  tidy = FALSE)
+```
+
+
+```{r, echo=FALSE}
+country_code <- list(fr_t='FRATNP',
+                     fr_c='FRACNP',
+                     be='BEL',
+                     gb_t='GBRTENW',
+                     gb_c='GBRCENW',
+                     nl='NLD',
+                     it='ITA',
+                     swe='SWE',
+                     sp='ESP',
+                     us='USA')
+countries <- c('fr_t',  'gb_t',  'nl', 'it', 'sp', 'swe', 'us')
+country_names <- list(fr_t='France',     # total population
+                     fr_c='France',      # civilian population
+                     be='Belgium',
+                     gb_t='England & Wales',    # total population
+                     gb_c='England & Wales',    # civilian population
+                     nl='Netherlands',
+                     it='Italy',
+                     swe='Sweden',
+                     sp='Spain',
+                     us='USA')
+gender_names <- list('b'='Both',
+                     'f'='Female',
+                     'm'='Male')
+```
+
+```{r, echo=FALSE}
+fusion_data = function(data_f,data_m,country)
+{
+  data_f["Gender"] = "F"
+  data_m["Gender"] = "M"
+  data = rbind(data_f,data_m)
+  data["Country"] = country
+  return (data)
+}
+gender_code = list('b'='both',
+                  'f'='female',
+                  'm'='male')
+import_data = function(country,gender)
+{
+  file = paste("./LIFE_TABLES/lt_",gender_code[gender],"/",gender,"ltper_1x1/",country,".",gender,"ltper_1x1.txt",sep="")
+  data = readr::read_delim(file, delim = ' ', skip = 2)
+  return(data)
+}
+retype = function(data)
+{
+  names(data) <- stringr::str_replace_all(names(data), " ", "")
+  data %>%
+  dplyr::mutate_at(vars(Year,Age,lx,dx,Lx,Tx),.funs = list(~as.integer(.))) %>%
+  dplyr::mutate_at(vars(Country,Gender),.funs = list(~forcats::as_factor(.))) %>%
+  dplyr::mutate_at(vars(mx,qx,ax,ex),.funs = list(~as.double(.)))-> data
+  return(data)
+}
+universal_table = function()
+{
+  index = (2:length(countries))
+  data_f = import_data(country_code[countries[1]],'f')
+  data_m = import_data(country_code[countries[1]],'m')
+  data = fusion_data(data_f,data_m,country_names[countries[1]])
+  for (c in countries[index])
+  {
+    data_f = import_data(country_code[c],'f')
+    data_m = import_data(country_code[c],'m')
+    temp = fusion_data(data_f,data_m,country_names[c])
+    data = rbind(data,temp)
+  }
+  return(data)
+}
+df = universal_table()
+df = retype(df)
+df%>%tidyr::drop_na(Age)->df
+glimpse(df)
+```
+
+
+# Visualisations et réarrangement de nos données
+
+```{r , echo = FALSE}
+df_pivot <- df %>%
+  select(Year, Age, Gender,Country, mx) %>%
+  tidyr::pivot_wider(names_from = "Age", values_from = "mx")
+```
+
+```{r, echo = FALSE}
+ex <- function(mx){
+  sum(cumprod(1 - mx))
+}
+df_pivot %>%
+  dplyr::select(Year, Gender, Country) -> df_ex
+df_ex["life_expectancy"]= apply(df_pivot[,-c(1,2,3)], MARGIN=1, FUN = ex)
+#compare to real ex
+df %>%
+  filter(Age==0) %>%
+  select(Year, Gender,Country,ex)
+df_ex
+```
+
+
+```{r , echo = FALSE}
+rex <- function(mx, age){
+  sum(cumprod(1 - mx[(age+1):length(mx)]))
+}
+```
+
+```{r, echo = FALSE}
+life_expectancy_table = function(lt)
+{
+  lt %>%
+    select(Country, Gender,Year, Age, mx) %>%
+    group_by(Year, Country, Gender) %>%
+    summarise(mx_list = list(mx))%>%
+    inner_join(lt[c("Age","Country","Gender","Year")],c("Year", "Gender","Country"))%>%
+    group_by(Year, Country, Gender, Age) %>%
+    summarise(ex = rex(unlist(mx_list),Age))%>%
+    arrange(Country, Gender) -> lt
+  return (lt)
+}
+df_ex_for_all_age = life_expectancy_table(df)
+```
+
+- [ ] Plot residual life expectancy as a function of `Year` at ages $60$ and $65$,
+facet by `Gender` and `Country`.
+
+
+```{r retirement, echo = FALSE, results="markup"}
+ages = c(60,65)
+p<-ggplot(mapping=aes(x=Year, y=ex, linetype=forcats::as_factor(Age))) +
+  geom_smooth(method="loess",
+              se=FALSE,
+              span=0.2,
+              size=.5) +
+  scale_color_brewer() +
+  labs(linetype="Age") +
+  facet_wrap(vars(Gender,Country))+
+  theme_bw()
+p%+%
+  filter(df_ex_for_all_age, Age %in% ages)
+```
+
+
+# Applications de méthodes factorielles sur données
+
+## PCA et SVD sur les tables de log-mortalité
+
+- [ ] Pick a Country, a Gender,  a range of years `1948:2010`.
+Extract the corresponding  lines from `life_table_pivot`. Take logarithms of
+central death rates and perform principal component analysis.
+
+
+```{r, echo = FALSE, results="markup"}
+library(tidyverse)
+library(broom)
+years = c(1948:2010)
+extract_data_pca = function(lt,ref_country,ref_gender,years)
+{
+  lt%>%
+    filter(Country == ref_country, Gender == ref_gender, Year %in% years) -> lt
+  data.frame(lt[,1],apply(lt[,-c(1,2,3)],MARGIN = 2,FUN = log)) -> lt
+  return(lt)
+}
+```
+
+```{r, echo = FALSE, results="markup",fig.height=5,fig.width=6}
+
+lt_pca = extract_data_pca(df_pivot,"Spain","M",years)
+pca = prcomp(lt_pca,scale = TRUE)
+COR = cor(lt_pca,pca$x[,1:2])
+s.corcircle(COR)
+tidy(pca,"pcs")%>%
+  as.data.frame()%>%
+  ggplot(aes(x = PC, y=percent)) +
+  geom_bar(stat="identity") + labs(x="PC",y="Variance Explained")+
+  theme_bw()
+augment(pca, data = lt_pca)%>%
+  ggplot(aes(.fittedPC1, .fittedPC2)) +
+  geom_point() + labs(x = "PC1", y = "PC2")+
+  geom_text(aes(label = Year))+
+  theme_bw()
+
+
+
+# Screeplot - V2
+
+screeplot(pca, type = "l", npcs = 15, main = "Screeplot of the first 10 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+
+# Cumulative variance plot 
+
+cumpro <- cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:15], xlab = "Principal Components", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 4, col="blue", lty=5)
+abline(h = 0.9680, col="blue", lty=5)
+legend("topleft", legend=c("Cut-off at PC4"),
+       col=c("blue"), lty=5, cex=0.6)
+
+```
+
+## Analyse canonique des corrélations
+
+```{r, echo = FALSE, results="markup"}
+library(vegan)
+extract_data_cca = function(lt,ref_country,ref_gender,years)
+{
+  lt%>%
+    filter(Country == ref_country, Gender == ref_gender, Year %in% years) -> mat
+  mat = as.data.frame(mat)
+  mat %>% remove_rownames %>% column_to_rownames(var="Year") -> mat
+  mat = mat[,-c(1,2,3)]
+  return(mat)
+}
+spain_f_cca = extract_data_cca(df_pivot,"Spain", "F", c(1948:1998))
+usa_f_cca = extract_data_cca(df_pivot,"USA", "F", c(1948:1998))
+ccamodel = cca(spain_f_cca~.,usa_f_cca)
+finalmodel<- ordistep(ccamodel, scope=formula(ccamodel))
+finalmodel
+anova.cca(finalmodel)
+plot(finalmodel, xlim=c(-1.5,2), ylim=c(-1,1.5),display=c("sp","cn","wa"))
+```
+
+
+# Modèle de Lee-Carter et ses limites
+# Application du modèle de Lee-Carter sur nos données 
+# Conclusion
+
+# Références
+
+__Life tables et demography__
+
+- [Human Mortality Database](https://www.mortality.org)
+- [Tables de mortalité françaises, Jacques Vallin et France Meslé](https://www.lifetable.de/data/FRA/FRA000018061997CY1.pdf)
+- [Modeling and Forecasting U.S. Mortality, R.D.Lee and L.R. Carter, JASA 1992]
+- [Les dimensions de la mortalité, S. Ledermann, Jean Breas, Population, 1959]
+
+__Graphiques et reporting__
+
+- [Interactive web-based data visualization with R, plotly, and shiny](https://plotly-r.com/index.html)
+- [R for Data Science](https://r4ds.had.co.nz)
+- [Layered graphics](http://vita.had.co.nz/papers/layered-grammar.pdf)
+- [Plotly](http://plotly.com/)
+
+__Tidyverse__
+
+- [tidyselect](https://tidyselect.r-lib.org/articles/tidyselect.html)
+- [dbplyr](https://cran.r-project.org/web/packages/dbplyr/vignettes/dbplyr.html)
+- [data.table](https://github.com/Rdatatable/data.table)
+- [DT](https://rstudio.github.io/DT/)
+
+__PCA, SVD, CCA__
+
+- [FactoMineR](http://factominer.free.fr/index_fr.html)
+- [ade4](http://pbil.univ-lyon1.fr/ade4/accueil.php)
+- [FactoInvestigate](http://factominer.free.fr/reporting/index_fr.html)
+- [PCA and Tidyverse](https://cmdlinetips.com/2019/05/how-to-do-pca-in-tidyverse-framework/)
+- [tidyprcomp](https://broom.tidyverse.org/reference/tidy.prcomp.html)
+
+
+
+
