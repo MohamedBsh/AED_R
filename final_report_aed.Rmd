@@ -1,6 +1,6 @@
 ---
 title: "Analyse exploratoire des données - Devoir III"
-author: "Duc Duong Nguyen & Mohamed-Amine Bousahih"
+author: "Mohamed-Amine Bousahih"
 date: "`r Sys.Date()`"
 output:
   pdf_document:
